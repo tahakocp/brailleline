@@ -22,3 +22,9 @@ bench: $(BUILD)/blbench
 clean:
 	rm -rf $(BUILD)
 .PHONY: all test bench clean
+
+sanitize:
+	@mkdir -p $(BUILD)
+	$(CC) -std=c99 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -Wall -Wextra -o $(BUILD)/test_asan tests/test_core.c src/brailleline.c
+	$(BUILD)/test_asan
+.PHONY: sanitize

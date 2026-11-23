@@ -31,11 +31,17 @@
   <p class="sub">A 40-cell refreshable braille line, drawn at real size (dots 2.5 mm apart, cells 6.0 mm apart). Type something and watch which dots have to move, and how many the power budget lets move at once.</p>
   <div class="row">
     <label>text (40 characters)<input id="text" type="text" maxlength="40" value="Hello, braille" autocomplete="off"></label>
-    <label>supply budget <span id="bv">360 mA</span><input id="budget" type="range" min="120" max="1200" step="120" value="360"></label>
+    <label>actuator
+      <select id="preset">
+        <option value="120,3">generic coil: 120 mA, 3 ms</option>
+        <option value="430,10">FoldedFlex model: 430 mA, 10 ms</option>
+        <option value="1000,15">MagnePins: ~1 A, 15 ms</option>
+      </select></label>
+    <label>coils allowed at once <span id="bv"></span><input id="budget" type="range" min="1" max="16" step="1" value="3"></label>
     <label>order
       <select id="mode"><option value="0">fewest slots</option><option value="1">reading order</option></select></label>
     <label>speed
-      <select id="speed"><option value="1">real time (3 ms pulses)</option><option value="40" selected>slow motion x40</option></select></label>
+      <select id="speed"><option value="1">real time</option><option value="40" selected>slow motion x40</option></select></label>
     <button id="go">Refresh</button>
   </div>
   <div class="cells" id="uni" aria-label="braille output"></div>
@@ -48,11 +54,12 @@
     <div class="stat"><b id="s-peak">0</b><span>peak mA</span></div>
     <div class="stat"><b id="s-naive">0</b><span>ms if every dot were rewritten</span></div>
   </div>
-  <small>Model only: each dot is a bistable pin that takes one 120 mA, 3 ms coil pulse to flip and draws nothing while it holds. No hardware was built. Same scheduler as the C firmware core (<a href="https://github.com/tahakocp/brailleline">source</a>). Plain letters and digits only, no contractions.</small>
+  <small>Model only: each dot is a bistable pin that takes one coil pulse to flip and draws nothing while it holds. The FoldedFlex and MagnePins figures are the ones their authors published, not measurements of mine. No hardware was built. Same scheduler as the C firmware core (<a href="https://github.com/tahakocp/brailleline">source</a>). Plain letters and digits only, no contractions.</small>
 </main>
 <script type="module">
 import { textToCells, plan, concurrent, unicodeCell } from './blcore.js';
-const PULSE_MA = 120, PULSE_MS = 3, N = 40;
+let PULSE_MA = 120, PULSE_MS = 3;
+const N = 40;
 const $ = (id) => document.getElementById(id);
 const board = $('board'), chart = $('chart');
 let shown = new Array(N).fill(0), anim = null;
@@ -76,7 +83,7 @@ function drawChart(slots, budget, upto = -1) {
   c.clearRect(0, 0, W, H);
   const top = Math.max(budget, 120) * 1.15, pad = 24;
   c.fillStyle = '#8a8f98'; c.font = '12px system-ui';
-  c.fillText('current drawn per 3 ms slot (mA)', 8, 14);
+  c.fillText('current drawn per slot (mA), one slot = ' + PULSE_MS + ' ms', 8, 14);
   const by = (ma) => H - 16 - (H - 36) * ma / top;
   c.strokeStyle = '#d9534f'; c.setLineDash([5, 4]); c.beginPath(); c.moveTo(0, by(budget)); c.lineTo(W, by(budget)); c.stroke(); c.setLineDash([]);
   c.fillStyle = '#d9534f'; c.fillText('budget ' + budget + ' mA', W - 110, by(budget) - 4);
@@ -85,8 +92,9 @@ function drawChart(slots, budget, upto = -1) {
 }
 function refresh() {
   if (anim) cancelAnimationFrame(anim);
-  const budget = +$('budget').value, mode = +$('mode').value, speed = +$('speed').value;
-  $('bv').textContent = budget + ' mA';
+  const [ma, ms] = $('preset').value.split(',').map(Number); PULSE_MA = ma; PULSE_MS = ms;
+  const coils = +$('budget').value, budget = coils * PULSE_MA, mode = +$('mode').value, speed = +$('speed').value;
+  $('bv').textContent = coils + ' = ' + budget + ' mA';
   const tgt = textToCells($('text').value, N);
   $('uni').textContent = tgt.map(unicodeCell).join('');
   const conc = concurrent(budget, PULSE_MA);
@@ -108,8 +116,9 @@ function refresh() {
 }
 $('go').onclick = refresh;
 $('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') refresh(); });
-for (const id of ['budget', 'mode', 'speed']) $(id).onchange = () => { if (id === 'budget') $('bv').textContent = $('budget').value + ' mA'; };
-$('budget').oninput = () => { $('bv').textContent = $('budget').value + ' mA'; };
+const label = () => { const ma = +$('preset').value.split(',')[0]; $('bv').textContent = $('budget').value + ' = ' + $('budget').value * ma + ' mA'; };
+$('budget').oninput = label; $('preset').onchange = () => { label(); refresh(); };
+label();
 drawBoard(shown); drawChart([], 360);
 window.__bl = { refresh };
 if (location.hash === '#auto') refresh();
