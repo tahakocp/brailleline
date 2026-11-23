@@ -44,7 +44,7 @@ Measured here with `make bench`: 21 lines of a public domain novel, word-wrapped
 | 4 (480 mA) | 25.4 | 76 ms | 79 ms | 180 ms |
 | 8 (960 mA) | 13.0 | 39 ms | 43 ms | 90 ms |
 
-Next-line text moves about 100 of the 240 dots, so skipping the unchanged ones is a bit more than a factor 2. Reading order costs 1 to 10 percent more time. With the FoldedFlex numbers (430 mA, 10 ms) the same line takes 254 ms at 4 coils at once, 997 ms at one.
+Next-line text moves about 100 of the 240 dots, so skipping the unchanged ones saves a factor of about 2.4. Reading order costs 0 to 10 percent more time. With the FoldedFlex numbers (430 mA, 10 ms) the same line takes 254 ms at 4 coils at once, 997 ms at one.
 
 Other measurements:
 
