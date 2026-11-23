@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>brailleline: refreshable braille line simulator</title>
+<style>
+  :root { color-scheme: dark; --bg:#14161a; --fg:#e8e6e1; --dim:#8a8f98; --accent:#f2b84b; --pin:#f2b84b; --hole:#2a2e35; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:20px; margin:0 0 4px; font-weight:600; }
+  p.sub { margin:0 0 16px; color:var(--dim); }
+  .row { display:flex; flex-wrap:wrap; gap:14px 22px; align-items:end; margin:12px 0; }
+  label { display:flex; flex-direction:column; font-size:12px; color:var(--dim); gap:4px; }
+  input[type=text] { background:#1d2025; color:var(--fg); border:1px solid #333840; border-radius:4px; padding:7px 9px; width:min(440px,90vw); font:inherit; }
+  input[type=range] { width:200px; }
+  button { background:var(--accent); color:#1a1306; border:0; border-radius:4px; padding:8px 14px; font:inherit; font-weight:600; cursor:pointer; }
+  canvas { width:100%; display:block; background:#0e1013; border-radius:6px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:14px 0; }
+  .stat { background:#1a1d22; border-radius:6px; padding:8px 12px; }
+  .stat b { display:block; font-size:21px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .stat span { font-size:12px; color:var(--dim); }
+  .cells { font-size:26px; letter-spacing:2px; margin:6px 0; overflow-wrap:anywhere; }
+  small { color:var(--dim); }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>brailleline simulator</h1>
+  <p class="sub">A 40-cell refreshable braille line, drawn at real size (dots 2.5 mm apart, cells 6.0 mm apart). Type something and watch which dots have to move, and how many the power budget lets move at once.</p>
+  <div class="row">
+    <label>text (40 characters)<input id="text" type="text" maxlength="40" value="Hello, braille" autocomplete="off"></label>
+    <label>supply budget <span id="bv">360 mA</span><input id="budget" type="range" min="120" max="1200" step="120" value="360"></label>
+    <label>order
+      <select id="mode"><option value="0">fewest slots</option><option value="1">reading order</option></select></label>
+    <label>speed
+      <select id="speed"><option value="1">real time (3 ms pulses)</option><option value="40" selected>slow motion x40</option></select></label>
+    <button id="go">Refresh</button>
+  </div>
+  <div class="cells" id="uni" aria-label="braille output"></div>
+  <canvas id="board" width="1200" height="150"></canvas>
+  <canvas id="chart" width="1200" height="150" style="margin-top:8px"></canvas>
+  <div class="stats">
+    <div class="stat"><b id="s-moved">0</b><span>dots moved</span></div>
+    <div class="stat"><b id="s-slots">0</b><span>slots</span></div>
+    <div class="stat"><b id="s-ms">0</b><span>ms to settle</span></div>
+    <div class="stat"><b id="s-peak">0</b><span>peak mA</span></div>
+    <div class="stat"><b id="s-naive">0</b><span>ms if every dot were rewritten</span></div>
+  </div>
+  <small>Model only: each dot is a bistable pin that takes one 120 mA, 3 ms coil pulse to flip and draws nothing while it holds. No hardware was built. Same scheduler as the C firmware core (<a href="https://github.com/tahakocp/brailleline">source</a>). Plain letters and digits only, no contractions.</small>
+</main>
+<script type="module">
+import { textToCells, plan, concurrent, unicodeCell } from './blcore.js';
+const PULSE_MA = 120, PULSE_MS = 3, N = 40;
+const $ = (id) => document.getElementById(id);
+const board = $('board'), chart = $('chart');
+let shown = new Array(N).fill(0), anim = null;
+
+function drawBoard(cells, active = []) {
+  const c = board.getContext('2d'), W = board.width, H = board.height;
+  c.clearRect(0, 0, W, H);
+  const mm = (W - 24) / (N * 6.0), x0 = 12 + 1.75 * mm, y0 = H / 2 - 3.75 * mm;
+  const act = new Set(active.map((p) => p.cell * 8 + p.dot));
+  for (let i = 0; i < N; i++) for (let d = 0; d < 6; d++) {
+    const col = d < 3 ? 0 : 1, row = d % 3;
+    const x = x0 + (i * 6.0 + col * 2.5) * mm, y = y0 + row * 2.5 * mm + 1.25 * mm;
+    const up = (cells[i] >> d) & 1;
+    c.beginPath(); c.arc(x, y, 0.8 * mm, 0, 7);
+    c.fillStyle = up ? '#f2b84b' : '#2a2e35'; c.fill();
+    if (act.has(i * 8 + d)) { c.lineWidth = 2; c.strokeStyle = '#ffffff'; c.beginPath(); c.arc(x, y, 1.15 * mm, 0, 7); c.stroke(); }
+  }
+}
+function drawChart(slots, budget, upto = -1) {
+  const c = chart.getContext('2d'), W = chart.width, H = chart.height;
+  c.clearRect(0, 0, W, H);
+  const top = Math.max(budget, 120) * 1.15, pad = 24;
+  c.fillStyle = '#8a8f98'; c.font = '12px system-ui';
+  c.fillText('current drawn per 3 ms slot (mA)', 8, 14);
+  const by = (ma) => H - 16 - (H - 36) * ma / top;
+  c.strokeStyle = '#d9534f'; c.setLineDash([5, 4]); c.beginPath(); c.moveTo(0, by(budget)); c.lineTo(W, by(budget)); c.stroke(); c.setLineDash([]);
+  c.fillStyle = '#d9534f'; c.fillText('budget ' + budget + ' mA', W - 110, by(budget) - 4);
+  const bw = Math.min(14, (W - pad) / Math.max(slots.length, 1));
+  slots.forEach((s, i) => { const h = s.length * PULSE_MA; c.fillStyle = i <= upto ? '#f2b84b' : '#5a4a22'; c.fillRect(pad + i * bw, by(h), bw - 1, H - 16 - by(h)); });
+}
+function refresh() {
+  if (anim) cancelAnimationFrame(anim);
+  const budget = +$('budget').value, mode = +$('mode').value, speed = +$('speed').value;
+  $('bv').textContent = budget + ' mA';
+  const tgt = textToCells($('text').value, N);
+  $('uni').textContent = tgt.map(unicodeCell).join('');
+  const conc = concurrent(budget, PULSE_MA);
+  const slots = plan(shown, tgt, conc, mode);
+  const moved = slots.reduce((a, s) => a + s.length, 0);
+  const touched = N * 6;
+  $('s-moved').textContent = moved; $('s-slots').textContent = slots.length;
+  $('s-ms').textContent = slots.length * PULSE_MS; $('s-peak').textContent = Math.max(0, ...slots.map((s) => s.length * PULSE_MA));
+  $('s-naive').textContent = Math.ceil(touched / conc) * PULSE_MS;
+  const cur = shown.slice(); const t0 = performance.now(); let k = -1;
+  drawChart(slots, budget); drawBoard(cur);
+  const step = (now) => {
+    const want = Math.min(slots.length - 1, Math.floor((now - t0) / (PULSE_MS * speed)));
+    while (k < want) { k++; for (const p of slots[k]) cur[p.cell] ^= 1 << p.dot; }
+    drawBoard(cur, k >= 0 && k < slots.length ? slots[k] : []); drawChart(slots, budget, k);
+    if (k < slots.length - 1) anim = requestAnimationFrame(step); else { shown = tgt; drawBoard(tgt); }
+  };
+  if (slots.length) anim = requestAnimationFrame(step); else drawBoard(tgt);
+}
+$('go').onclick = refresh;
+$('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') refresh(); });
+for (const id of ['budget', 'mode', 'speed']) $(id).onchange = () => { if (id === 'budget') $('bv').textContent = $('budget').value + ' mA'; };
+$('budget').oninput = () => { $('bv').textContent = $('budget').value + ' mA'; };
+drawBoard(shown); drawChart([], 360);
+window.__bl = { refresh };
+if (location.hash === '#auto') refresh();
+</script>
+</body>
+</html>
